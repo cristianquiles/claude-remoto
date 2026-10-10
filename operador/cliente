@@ -1,0 +1,53 @@
+#!/bin/bash
+# shellcheck disable=SC2088  # la ~ se expande en el Mac del cliente, no aquí
+# Lado de Cris: manda tareas al Claude de un cliente por Tailscale SSH.
+#
+#   cliente alta <nombre> <usuario>@<equipo>   registra un equipo (la línea que da comprobar.sh)
+#   cliente lista
+#   cliente <nombre> ping                      ¿está encendido y activo?
+#   cliente <nombre> comprobar                 comprobación completa en su Mac
+#   cliente <nombre> "tarea"                   nueva tarea (o por stdin: cat brief.md | cliente zerca)
+#   cliente <nombre> -c "tarea"                continúa la conversación anterior
+set -uo pipefail
+
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/claude-remoto/equipos"
+SSH="${CLAUDE_REMOTO_SSH:-ssh}"
+mkdir -p "$(dirname "$CONF")"; touch "$CONF"
+
+uso() { sed -n '5,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+destino() { awk -v n="$1" '$1==n{print $2}' "$CONF"; }
+remoto() { # remoto <destino> <comando> [stdin]
+  # shellcheck disable=SC2086
+  $SSH -o ConnectTimeout=15 -o ServerAliveInterval=30 "$1" "$2"
+}
+
+[ $# -ge 1 ] || uso
+case "$1" in
+  alta)
+    [ $# -eq 3 ] || uso
+    grep -v "^$2 " "$CONF" > "$CONF.tmp"; mv "$CONF.tmp" "$CONF"
+    echo "$2 $3" >> "$CONF"
+    echo "Registrado: $2 → $3"
+    echo "Probando conexión…"
+    remoto "$3" '~/.claude-remoto/remoto.sh ping' </dev/null
+    exit $?
+    ;;
+  lista) column -t "$CONF" 2>/dev/null || cat "$CONF"; exit 0 ;;
+  -h|--help|ayuda) uso ;;
+esac
+
+NOMBRE="$1"; shift
+DEST="$(destino "$NOMBRE")"
+[ -n "$DEST" ] || { echo "No conozco el equipo '$NOMBRE'. Usa: cliente alta $NOMBRE usuario@equipo" >&2; exit 2; }
+
+case "${1:-}" in
+  ping)      remoto "$DEST" '~/.claude-remoto/remoto.sh ping' </dev/null ;;
+  comprobar) remoto "$DEST" '~/.claude-remoto/comprobar.sh' </dev/null ;;
+  *)
+    MODO=tarea
+    if [ "${1:-}" = "-c" ]; then MODO=continuar; shift; fi
+    if [ $# -gt 0 ]; then TAREA="$*"; else TAREA="$(cat)"; fi
+    [ -n "$TAREA" ] || uso
+    printf '%s' "$TAREA" | remoto "$DEST" "~/.claude-remoto/remoto.sh $MODO"
+    ;;
+esac
