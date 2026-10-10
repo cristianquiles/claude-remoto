@@ -1,78 +1,69 @@
 # Lado del operador (Cris)
 
-Cómo preparar Tailscale, dar de alta un cliente y mandarle tareas.
+## 1. Desplegar el buzón (una sola vez)
 
-## 1. Política de acceso del tailnet (una sola vez)
+El buzón es un Cloudflare Worker con una base D1. Cabe en el plan gratuito: cada equipo conectado hace unas 4.000 peticiones al día y el límite gratuito es de 100.000.
 
-Panel de Tailscale → **Access controls**. Hay que añadir tres cosas:
-
-```jsonc
-{
-  // Solo los administradores pueden crear equipos con esta etiqueta
-  "tagOwners": {
-    "tag:cliente": ["autogroup:admin"]
-  },
-
-  "grants": [
-    // TÚ puedes llegar a los equipos de clientes…
-    { "src": ["TU_USUARIO@TU_DOMINIO"], "dst": ["tag:cliente"], "ip": ["*"] }
-    // …y NO hay ninguna regla en sentido contrario: un cliente no ve tus equipos ni los de otros clientes
-  ],
-
-  "ssh": [
-    {
-      "action": "accept",
-      "src":    ["TU_USUARIO@TU_DOMINIO"],
-      "dst":    ["tag:cliente"],
-      "users":  ["autogroup:nonroot"]
-    }
-  ]
-}
+```bash
+npx wrangler login
 ```
 
-> ⚠️ **Antes de dar de alta al primer cliente, revisa que no quede la regla por defecto `{"src": ["*"], "dst": ["*"]}`** (o `"acls": [{"action":"accept","src":["*"],"dst":["*:*"]}]`). Con ella, el portátil del cliente podría llegar a todos tus equipos. Sustitúyela por reglas explícitas para tus propios equipos.
+```bash
+worker/desplegar.sh
+```
 
-## 2. Clave de conexión para cada cliente
+El script crea la base `claude-remoto`, aplica el esquema y despliega el Worker. También genera el token de administrador y lo guarda con la URL en `~/.config/claude-remoto/` (`url`, `admin_token`, permisos 600). Para actualizar el Worker, vuelve a ejecutarlo.
 
-Panel → **Settings → Keys → Generate auth key**:
-
-- Reusable: **no** · Ephemeral: **no** · Pre-approved: **sí**
-- Tags: **tag:cliente**
-- Expiration: **1 día**
-
-Envíasela por un canal distinto al del enlace de instalación (por ejemplo, el enlace por correo y la clave por WhatsApp).
-
-Cuando el equipo aparezca en **Machines**, ábrelo y pulsa **Disable key expiry**. Si no, se desconecta a los 180 días.
-
-## 3. Instalar el comando `cliente` en tu Mac
+## 2. Instalar el comando `cliente`
 
 ```bash
 mkdir -p ~/.local/bin && ln -sf "$PWD/operador/cliente" ~/.local/bin/cliente
 ```
 
-Tu Mac solo necesita estar en el tailnet (sirve la app normal de Tailscale) y tener `ssh`.
+Requiere `curl` y `jq`.
+
+## 3. Dar de alta un cliente
+
+```bash
+cliente alta zerca
+```
+
+Muestra las instrucciones que hay que enviar al cliente: la línea de instalación y el **código de conexión** (`CR1.…`). Envía el código por un canal distinto al de la línea de instalación.
 
 ## 4. Uso
 
 ```bash
-cliente alta zerca ana@claude-zerca      # la línea que te manda el cliente al terminar
-cliente zerca ping                       # ¿encendido y activo?
-cliente zerca comprobar                  # comprobación completa en su Mac
+cliente lista                            # equipos, en línea o no, pausados
+cliente zerca ping                       # estado, versión de Claude, carpeta y permisos
+cliente zerca comprobar                  # comprobación completa en su equipo
 cliente zerca "Revisa brief.md y prepara 3 copys para Meta en copys.md"
 cliente zerca -c "Hazlos más cortos"     # continúa la misma conversación
 cat brief.md | cliente zerca             # la tarea por la entrada estándar
-cliente lista
+cliente resultado <id>                   # si cortaste la espera
+cliente baja zerca                       # revoca el acceso; su agente se detiene solo
 ```
 
-Los equipos registrados se guardan en `~/.config/claude-remoto/equipos`.
+Desde tu Claude Code basta con pedir «manda esto al Claude de Zerca»: ejecutará `cliente zerca "…"` y te traerá la respuesta.
 
-Desde tu Claude Code basta con pedirle «manda esto al Claude de Zerca»: ejecutará `cliente zerca "…"` y te traerá la respuesta.
-
-## Códigos de salida de una tarea
-
-| Código | Significado |
+| Código de salida | Significado |
 |---|---|
-| 0 | Correcto |
-| 2 | Error de uso o de instalación en el cliente |
+| 0 | Hecha |
+| 1 | Error (en la tarea o en el buzón) |
 | 3 | El cliente ha **pausado** el acceso |
-| 255 | Sin conexión SSH (equipo apagado, dormido o fuera del tailnet) |
+
+## Qué puede hacer el Claude del cliente
+
+Cada tarea se ejecuta con `claude -p --restricted --strict-mcp-config`:
+
+- Solo las herramientas de `HerramientasPermitidas` en su `config.json`. Por defecto: `Read,Glob,Grep,Edit,Write,WebSearch,WebFetch`.
+- Ignora sus ajustes, permisos guardados y conectores MCP.
+- Solo trabaja dentro de su carpeta de trabajo.
+- Límite de 2 horas por tarea.
+
+Si un cliente quiere que su Claude ejecute comandos concretos, puede añadir, por ejemplo, `PowerShell` o `Bash(git *)` a esa lista. Es decisión suya.
+
+## Seguridad
+
+- **Token de administrador:** solo vive en tu Mac y como secreto del Worker. Si se filtra, bórralo de `~/.config/claude-remoto/admin_token` y vuelve a ejecutar `desplegar.sh`.
+- **Tokens de equipo:** se guardan solo como hash SHA-256 en D1. Un token filtrado únicamente permite recoger tareas de ese equipo; se revoca con `cliente baja`.
+- **Datos en tránsito:** el buzón guarda las tareas y los resultados como mucho 7 días; un cron diario los borra.

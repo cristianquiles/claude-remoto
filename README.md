@@ -1,60 +1,66 @@
 # Claude remoto
 
-Conecta tu Mac de forma privada para que Cris pueda encargar tareas a **tu** Claude: trabaja en tu equipo, con tu cuenta y solo en la carpeta que tú elijas.
+Permite que Cris encargue tareas a **tu** Claude: trabaja en tu ordenador, con tu cuenta y solo en la carpeta que tú elijas.
 
-## Instalación (5 minutos)
+## Instalación en Windows (5 minutos)
 
-1. Abre la app **Terminal** (Cmd + Espacio, escribe «Terminal», Intro).
-2. Copia esta línea, pégala y pulsa Intro:
+1. Abre **PowerShell**: tecla Windows, escribe «PowerShell» y pulsa Intro. No hace falta abrirlo como administrador.
+2. Copia esta línea, pégala (clic derecho) y pulsa Intro:
 
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/cristianquiles/claude-remoto/main/instalar.sh)
+```powershell
+irm https://raw.githubusercontent.com/cristianquiles/claude-remoto/main/windows/instalar.ps1 | iex
 ```
 
 3. Sigue las preguntas. Te hará falta:
-   - la **contraseña de tu Mac** (te la pedirá 2 o 3 veces; al escribirla no se ve nada, es normal)
-   - la **clave de conexión** que te ha enviado Cris (empieza por `tskey-`)
+   - el **código de conexión** que te ha enviado Cris (empieza por `CR1.`)
    - tu cuenta de **Claude Pro o Max** (se abre el navegador para autorizar) o una clave de API de Anthropic
 
-Al terminar se hace una comprobación automática, con una tarea de prueba real. Si todo sale bien verás **Todo listo** y una línea que empieza por `cliente alta…`: **envíasela a Cris**.
+Al terminar se hace una comprobación automática, con una tarea de prueba real. Si ves **Todo listo**, avisa a Cris.
 
-## Qué se instala
+## Cómo funciona
 
-| Pieza | Para qué |
-|---|---|
-| [Homebrew](https://brew.sh) | Instalador de programas estándar en Mac (si no lo tenías) |
-| [Tailscale](https://tailscale.com) | Conexión privada y cifrada entre tu Mac y el de Cris. No abre puertos a internet |
-| [Claude Code](https://claude.com/claude-code) | El asistente de Anthropic, instalado con su instalador oficial |
-| `~/.claude-remoto/` | La configuración, tu credencial (solo legible por tu usuario) y el registro de tareas |
+```
+ Claude de Cris ──encarga──▶  buzón (Cloudflare)  ◀──recoge── agente en tu PC ──▶ tu Claude Code
+                ◀─resultado─                      ──entrega─▶
+```
+
+- En tu PC corre un pequeño **agente** en segundo plano: se inicia solo al encender el equipo.
+- El agente **pregunta** al buzón si hay tareas. Nadie se conecta a tu ordenador ni se abre ningún puerto.
+- Cris **no tiene acceso a tu equipo**: solo puede dejar tareas en el buzón. Cada tarea la ejecuta tu Claude Code en modo restringido, sin ejecutar comandos y sin salir de la carpeta de trabajo.
+- Las tareas y sus resultados se borran del buzón a los 7 días.
 
 ## Tú tienes el control
 
-```bash
-~/.claude-remoto/acceso.sh pausar      # bloquea las tareas remotas
-~/.claude-remoto/acceso.sh reanudar    # las vuelve a permitir
-~/.claude-remoto/acceso.sh registro    # qué te ha pedido Cris y cuándo
-~/.claude-remoto/comprobar.sh          # vuelve a comprobar que todo funciona
+En PowerShell:
+
+```powershell
+& "$env:USERPROFILE\.claude-remoto\acceso.ps1" pausar      # rechaza las tareas de Cris
+& "$env:USERPROFILE\.claude-remoto\acceso.ps1" reanudar    # las vuelve a aceptar
+& "$env:USERPROFILE\.claude-remoto\acceso.ps1" registro    # qué te ha pedido Cris y cuándo
+& "$env:USERPROFILE\.claude-remoto\comprobar.ps1"          # comprueba que todo funciona
 ```
 
-- **Carpeta y permisos:** en `~/.claude-remoto/config` decides en qué carpeta trabaja Claude y qué herramientas puede usar. Por defecto puede leer y editar archivos de esa carpeta y buscar en internet. **No** puede ejecutar comandos de terminal salvo que tú los añadas.
+- **Carpeta y permisos:** en `%USERPROFILE%\.claude-remoto\config.json` decides en qué carpeta trabaja Claude y qué herramientas puede usar. Por defecto puede leer y editar archivos de esa carpeta y buscar en internet. No puede ejecutar comandos, ni usar tus ajustes o conectores de Claude, ni tocar nada fuera de la carpeta.
 - **Gasto:** las tareas consumen de tu cuenta de Claude, igual que si las escribieras tú.
-- **Para que reciba tareas** el Mac tiene que estar encendido y sin dormir.
-
-> **Transparencia:** la conexión de Tailscale da a Cris acceso a una terminal con tu usuario. La carpeta, los permisos, la pausa y el registro controlan lo que hace Claude, pero técnicamente no impiden ese acceso. Si quieres una separación total, crea en Ajustes del Sistema un usuario de macOS solo para esto («Claude Remoto») y ejecuta el instalador desde esa cuenta.
+- **Para recibir tareas**, el ordenador tiene que estar encendido, con la sesión iniciada y sin suspender.
 
 ## Desinstalar
 
-```bash
-~/.claude-remoto/desinstalar.sh
+```powershell
+& "$env:USERPROFILE\.claude-remoto\desinstalar.ps1"
 ```
 
-Desconecta el Mac, borra la credencial y (si quieres) Tailscale. No toca tu carpeta de trabajo ni tu Claude Code.
+Detiene el agente y borra la credencial. Tu carpeta de trabajo y Claude Code no se tocan.
 
 ## Problemas frecuentes
 
 | Mensaje | Qué hacer |
 |---|---|
-| «Ya tienes la app de Tailscale instalada» | Avisa a Cris: hay que decidir si se desinstala la app |
-| «La clave puede haber caducado» | Pide a Cris una clave nueva (duran 1 día) |
-| «Claude no respondió bien a la tarea de prueba» | Vuelve a ejecutar el instalador y, en el paso 5, responde «n» para guardar una credencial nueva |
-| Aviso de reposo | Ajustes del Sistema → Batería → Opciones → «Evitar reposo automático con el adaptador de corriente» |
+| «El código no funciona o ha caducado» | Pide a Cris un código nuevo |
+| «Claude no respondió bien a la prueba» | Vuelve a ejecutar el instalador y, en el paso 3, responde «n» para guardar una credencial nueva |
+| «El agente no está en marcha» | Ejecuta `Start-ScheduledTask 'Claude remoto'` o reinicia el ordenador |
+| Aviso de suspensión | Configuración → Sistema → Inicio/apagado y batería → «Cuando esté enchufado, suspender después de: Nunca» |
+
+---
+
+¿Eres Cris? Mira [operador/README.md](operador/README.md).

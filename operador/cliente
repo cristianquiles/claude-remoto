@@ -1,53 +1,127 @@
 #!/bin/bash
-# shellcheck disable=SC2088  # la ~ se expande en el Mac del cliente, no aquí
-# Lado de Cris: manda tareas al Claude de un cliente por Tailscale SSH.
+# Lado de Cris: encarga tareas al Claude de un cliente a través del buzón (Cloudflare Worker).
 #
-#   cliente alta <nombre> <usuario>@<equipo>   registra un equipo (la línea que da comprobar.sh)
-#   cliente lista
-#   cliente <nombre> ping                      ¿está encendido y activo?
-#   cliente <nombre> comprobar                 comprobación completa en su Mac
-#   cliente <nombre> "tarea"                   nueva tarea (o por stdin: cat brief.md | cliente zerca)
-#   cliente <nombre> -c "tarea"                continúa la conversación anterior
+#   cliente alta <nombre>             da de alta un equipo y muestra el código de conexión para el cliente
+#   cliente baja <nombre>             revoca el acceso
+#   cliente lista                     equipos, si están en línea y si han pausado
+#   cliente <nombre> ping             estado de un equipo
+#   cliente <nombre> comprobar        comprobación completa en su equipo
+#   cliente <nombre> "tarea"          nueva tarea (o por stdin: cat brief.md | cliente zerca)
+#   cliente <nombre> -c "tarea"       continúa la conversación anterior
+#   cliente resultado <id>            recupera el resultado de una tarea
 set -uo pipefail
 
-CONF="${XDG_CONFIG_HOME:-$HOME/.config}/claude-remoto/equipos"
-SSH="${CLAUDE_REMOTO_SSH:-ssh}"
-mkdir -p "$(dirname "$CONF")"; touch "$CONF"
+CONF_DIR="${CLAUDE_REMOTO_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-remoto}"
+INSTALADOR="https://raw.githubusercontent.com/cristianquiles/claude-remoto/main/windows/instalar.ps1"
 
-uso() { sed -n '5,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
-destino() { awk -v n="$1" '$1==n{print $2}' "$CONF"; }
-remoto() { # remoto <destino> <comando> [stdin]
-  # shellcheck disable=SC2086
-  $SSH -o ConnectTimeout=15 -o ServerAliveInterval=30 "$1" "$2"
+uso() { sed -n '4,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+fallo() { printf 'cliente: %s\n' "$*" >&2; exit 1; }
+
+[ -s "$CONF_DIR/url" ] && [ -s "$CONF_DIR/admin_token" ] \
+  || fallo "falta la configuración en $CONF_DIR (url y admin_token). Ver operador/README.md"
+URL="$(tr -d '[:space:]' < "$CONF_DIR/url")"; URL="${URL%/}"
+ADMIN="$(tr -d '[:space:]' < "$CONF_DIR/admin_token")"
+
+api() { # api METODO RUTA [json] → deja el cuerpo en $CUERPO y el código HTTP en $HTTP
+  local salida
+  salida="$(curl -sS -w '\n%{http_code}' -X "$1" "$URL$2" \
+    -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json; charset=utf-8' \
+    ${3:+--data-binary "$3"})" || fallo "no se puede contactar con el buzón ($URL)"
+  HTTP="${salida##*$'\n'}"
+  CUERPO="${salida%$'\n'*}"
+}
+error_api() { fallo "$(printf '%s' "$CUERPO" | jq -r '.error // .' 2>/dev/null || printf '%s' "$CUERPO") (HTTP $HTTP)"; }
+
+ver_equipo() {
+  printf '%s' "$1" | jq -r '
+    "\(.nombre): " + (if .en_linea then "EN LÍNEA" else "desconectado" end) + " · \(.estado)"
+    + (if .ultimo_contacto then " · último contacto \(.ultimo_contacto)" else "" end)
+    + (if .info then "\n  equipo \(.info.equipo // "?") · \(.info.claude // "?")\n  carpeta \(.info.carpeta // "?")\n  permisos \(.info.permisos // "?")" else "" end)'
+}
+
+esperar() { # esperar ID
+  local id="$1" estado="" previo=""
+  while true; do
+    api GET "/admin/tareas/$id"; [ "$HTTP" = 200 ] || error_api
+    estado="$(printf '%s' "$CUERPO" | jq -r .estado)"
+    if [ "$estado" != "$previo" ]; then
+      case "$estado" in
+        pendiente) printf '… en cola (se entregará cuando el equipo la recoja)\n' >&2 ;;
+        en_curso)  printf '… Claude está trabajando en ello\n' >&2 ;;
+      esac
+      previo="$estado"
+    fi
+    case "$estado" in
+      hecha) printf '%s\n' "$CUERPO" | jq -r .resultado; return 0 ;;
+      error) printf '%s\n' "$CUERPO" | jq -r .resultado >&2; return 1 ;;
+    esac
+    sleep 3
+  done
+}
+
+encargar() { # encargar EQUIPO MODO PROMPT
+  api POST /admin/tareas "$(jq -n --arg e "$1" --arg m "$2" --arg p "$3" '{equipo:$e, modo:$m, prompt:$p}')"
+  case "$HTTP" in
+    201) ;;
+    409) printf 'cliente: %s\n' "$(printf '%s' "$CUERPO" | jq -r .error)" >&2; exit 3 ;;
+    *)   error_api ;;
+  esac
+  local id; id="$(printf '%s' "$CUERPO" | jq -r .id)"
+  printf '%s' "$CUERPO" | jq -e '.equipo.en_linea' >/dev/null \
+    || printf 'aviso: %s no está en línea; la tarea espera en cola hasta que se conecte\n' "$1" >&2
+  printf 'tarea %s (si cortas la espera: cliente resultado %s)\n' "$id" "$id" >&2
+  esperar "$id"
 }
 
 [ $# -ge 1 ] || uso
 case "$1" in
   alta)
-    [ $# -eq 3 ] || uso
-    grep -v "^$2 " "$CONF" > "$CONF.tmp"; mv "$CONF.tmp" "$CONF"
-    echo "$2 $3" >> "$CONF"
-    echo "Registrado: $2 → $3"
-    echo "Probando conexión…"
-    remoto "$3" '~/.claude-remoto/remoto.sh ping' </dev/null
-    exit $?
-    ;;
-  lista) column -t "$CONF" 2>/dev/null || cat "$CONF"; exit 0 ;;
+    [ $# -eq 2 ] || uso
+    api POST /admin/equipos "$(jq -n --arg n "$2" '{nombre:$n}')"
+    [ "$HTTP" = 201 ] || error_api
+    TOKEN="$(printf '%s' "$CUERPO" | jq -r .token)"
+    CODIGO="CR1.$(printf '%s|%s' "$URL" "$TOKEN" | base64 | tr -d '\n=' | tr '+/' '-_')"
+    cat <<EOF
+Equipo '$2' dado de alta. Envía al cliente estas instrucciones
+(mejor el código por un canal distinto, p. ej. WhatsApp):
+
+  1. Abre PowerShell (tecla Windows, escribe "PowerShell", Intro)
+  2. Pega esta línea y pulsa Intro:
+
+     irm $INSTALADOR | iex
+
+  3. Cuando lo pida, pega este código de conexión:
+
+     $CODIGO
+
+El código da acceso a este equipo del buzón: si se pierde, "cliente baja $2" y vuelve a dar de alta.
+EOF
+    exit 0 ;;
+  baja)
+    [ $# -eq 2 ] || uso
+    api DELETE "/admin/equipos/$2"; [ "$HTTP" = 200 ] || error_api
+    echo "Equipo '$2' dado de baja: su agente dejará de funcionar."; exit 0 ;;
+  lista)
+    api GET /admin/equipos; [ "$HTTP" = 200 ] || error_api
+    [ "$(printf '%s' "$CUERPO" | jq length)" = 0 ] && { echo "No hay equipos. Usa: cliente alta <nombre>"; exit 0; }
+    printf '%s' "$CUERPO" | jq -r '.[] | "\(.nombre)\t\(if .en_linea then "EN LÍNEA" else "desconectado" end)\t\(.estado)\t\(.ultimo_contacto // "-")"' | column -t -s $'\t'
+    exit 0 ;;
+  resultado)
+    [ $# -eq 2 ] || uso; esperar "$2"; exit $? ;;
   -h|--help|ayuda) uso ;;
 esac
 
 NOMBRE="$1"; shift
-DEST="$(destino "$NOMBRE")"
-[ -n "$DEST" ] || { echo "No conozco el equipo '$NOMBRE'. Usa: cliente alta $NOMBRE usuario@equipo" >&2; exit 2; }
-
 case "${1:-}" in
-  ping)      remoto "$DEST" '~/.claude-remoto/remoto.sh ping' </dev/null ;;
-  comprobar) remoto "$DEST" '~/.claude-remoto/comprobar.sh' </dev/null ;;
+  ping)
+    api GET "/admin/equipos/$NOMBRE"; [ "$HTTP" = 200 ] || error_api
+    ver_equipo "$CUERPO" ;;
+  comprobar)
+    encargar "$NOMBRE" comprobar comprobar ;;
   *)
     MODO=tarea
     if [ "${1:-}" = "-c" ]; then MODO=continuar; shift; fi
     if [ $# -gt 0 ]; then TAREA="$*"; else TAREA="$(cat)"; fi
     [ -n "$TAREA" ] || uso
-    printf '%s' "$TAREA" | remoto "$DEST" "~/.claude-remoto/remoto.sh $MODO"
-    ;;
+    encargar "$NOMBRE" "$MODO" "$TAREA" ;;
 esac

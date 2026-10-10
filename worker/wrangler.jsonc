@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "claude-remoto",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "claude-remoto",
+      "database_id": "PENDIENTE"
+    }
+  ],
+  // Limpieza diaria: borra tareas de más de 7 días
+  "triggers": { "crons": ["0 4 * * *"] },
+  "observability": { "enabled": true }
+  // Secreto necesario: ADMIN_TOKEN  (wrangler secret put ADMIN_TOKEN)
+}
